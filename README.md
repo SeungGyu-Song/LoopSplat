@@ -140,11 +140,9 @@ Our implementation is heavily based on <a href="https://vladimiryugay.github.io/
 If you find our paper and code useful, please cite us:
 
 ```bib
-@misc{zhu2024_loopsplat,
+@inproceedings{zhu2025_loopsplat,
       title={LoopSplat: Loop Closure by Registering 3D Gaussian Splats}, 
       author={Liyuan Zhu and Yue Li and Erik Sandström and Shengyu Huang and Konrad Schindler and Iro Armeni},
-      year={2024},
-      eprint={2408.10154},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+      year={2025},
+      booktitle = {International Conference on 3D Vision (3DV)},
 }
