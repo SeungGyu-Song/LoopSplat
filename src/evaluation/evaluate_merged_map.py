@@ -106,7 +106,7 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
     """
     opt_params = OptimizationParams(ArgumentParser(description="Training script parameters"))
 
-    gaussian_model = GaussianModel(3)
+    gaussian_model = GaussianModel(3) # isotropic=False
     gaussian_model.active_sh_degree = 0
     if pt_cloud is None:
         output_mesh = output_dir / "mesh" / "cleaned_mesh.ply"

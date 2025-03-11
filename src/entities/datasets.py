@@ -10,6 +10,11 @@ import imageio
 import trimesh
 
 
+"""
+torch.utils.data.Dataset은 PyTorch에서 데이터셋을 정의할 때 사용하는 기본 클래스
+이 클래스를 상속하면 반드시 __len__()과 __getitem__() 메서드를 구현해야 함
+"""
+
 class BaseDataset(torch.utils.data.Dataset):
 
     def __init__(self, dataset_config: dict):

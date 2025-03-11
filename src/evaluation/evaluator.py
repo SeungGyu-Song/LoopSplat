@@ -24,7 +24,7 @@ from src.evaluation.evaluate_merged_map import (RenderFrames, merge_submaps,
                                                 refine_global_map)
 from src.evaluation.evaluate_reconstruction import evaluate_reconstruction, clean_mesh
 from src.evaluation.evaluate_trajectory import evaluate_trajectory
-from src.utils.io_utils import load_config, save_dict_to_json, log_metrics_to_wandb
+from src.utils.io_utils import load_config, save_dict_to_json, log_metrics_to_wandb, load_json
 from src.utils.mapper_utils import calc_psnr
 from src.utils.utils import (get_render_settings, np2torch,
                              render_gaussian_model, setup_seed, 
@@ -33,6 +33,7 @@ from src.utils.utils import (get_render_settings, np2torch,
 
 class Evaluator(object):
 
+    # checkpoint_path : LoopSplat/Result/Replica/[scene_name]
     def __init__(self, checkpoint_path, config_path, config=None, save_render=False) -> None:
         if config is None:
             self.config = load_config(config_path)
@@ -48,20 +49,43 @@ class Evaluator(object):
         self.dataset_name = self.config["dataset_name"]
         self.gt_poses = np.array(self.dataset.poses)
         self.fx, self.fy = self.dataset.intrinsics[0, 0], self.dataset.intrinsics[1, 1]
-        self.cx, self.cy = self.dataset.intrinsics[0,
-                                                   2], self.dataset.intrinsics[1, 2]
+        self.cx, self.cy = self.dataset.intrinsics[0, 2], self.dataset.intrinsics[1, 2]
         self.width, self.height = self.dataset.width, self.dataset.height
         self.save_render = save_render
         if self.save_render:
             self.render_path = self.checkpoint_path / "rendered_imgs"
             self.render_path.mkdir(exist_ok=True, parents=True)
 
-        self.estimated_c2w = torch2np(torch.load(self.checkpoint_path / "estimated_c2w.ckpt", map_location=self.device))
+        self.estimated_c2w = torch2np(torch.load(self.checkpoint_path / "estimated_c2w.ckpt", map_location=self.device))\
+        
+        self.loop_pairs = {}
+
+        # self.loop_pairs = load_json(self.checkpoint_path / "submaps" / "loop_pairs.json")
+        
+        # self.all_loop_ids = self.flatten_loop_pairs(self.loop_pairs)
+
+        # # submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        # self.submaps_paths = sorted(
+        #     [path for path in (self.checkpoint_path / "submaps").glob('*.ckpt')
+        #      if path.stem in self.all_loop_ids]
+        # )
         self.submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*')))
+
         self.exposures_ab = None
         if (self.checkpoint_path / "exposures_ab.ckpt").exists():
             self.exposures_ab = torch2np(torch.load(self.checkpoint_path / "exposures_ab.ckpt", map_location=self.device))
             print(f"Loaded trained exposures paramters for scene {self.scene_name}")
+        
+        
+    
+    def flatten_loop_pairs(self, _loop_pairs) :
+        flat_list=[]
+        for key, sublist in _loop_pairs.items() :
+            flat_list.append(key)
+            flat_list.extend(sublist)
+        unique_list = sorted(set(flat_list))
+
+        return unique_list
 
     def run_trajectory_eval(self):
         """ Evaluates the estimated trajectory """
@@ -161,7 +185,18 @@ class Evaluator(object):
             sdf_trunc=0.04 * scale,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
 
-        submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        # loop있는 keyframe만 불러오기 
+        self.loop_pairs = load_json(self.checkpoint_path / "submaps" / "loop_pairs.json")
+        
+        self.all_loop_ids = self.flatten_loop_pairs(self.loop_pairs)
+
+        # submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        submaps_paths = sorted(
+            [path for path in (self.checkpoint_path / "submaps").glob('*.ckpt')
+             if int(path.stem) in self.all_loop_ids]
+        )
+        print(f"Matched Submap size is {len(submaps_paths)}")
+        
         for submap_path in tqdm(submaps_paths):
             submap = torch.load(submap_path, map_location=self.device)
             gaussian_model = GaussianModel()
@@ -169,15 +204,19 @@ class Evaluator(object):
             gaussian_model.restore_from_params(
                 submap["gaussian_params"], opt_settings)
 
-            for keyframe_id in submap["submap_keyframes"]:
+            # 여기 for문을 loop로 겹친 submap들로만 가져오면 될 거같은데
+            for keyframe_id in submap["submap_keyframes"]: 
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
+                # submap에 있는 gaussian들의 정보를 불러오기 : 정보별로 저장한 자료구조들
+                # colour값은 없는 듯
                 render_dict = render_gaussian_model(
                     gaussian_model, get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c))
                 rendered_color, rendered_depth = render_dict["color"].detach(
-                ), render_dict["depth"][0].detach()
+                ), render_dict["depth"][0].detach() 
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
 
+                # C, H, w => H, W, C
                 rendered_color = (
                     torch2np(rendered_color.permute(1, 2, 0)) * 255).astype(np.uint8)
                 rendered_depth = torch2np(rendered_depth)
@@ -198,11 +237,13 @@ class Evaluator(object):
         file_name = self.checkpoint_path / "mesh" / "cleaned_mesh.ply"
         o3d.io.write_triangle_mesh(str(file_name), o3d_mesh)
         print(f"Reconstructed mesh saved to {file_name}")
-        if self.config["dataset_name"] == "replica":
-            evaluate_reconstruction(file_name,
-                                    f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_mesh_cull_virt_cams.ply",
-                                    f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_pc_unseen.npy",
-                                    self.checkpoint_path)
+
+        # 왜 replica일 때만 하지?
+        # if self.config["dataset_name"] == "replica":
+        #     evaluate_reconstruction(file_name,
+        #                             f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_mesh_cull_virt_cams.ply",
+        #                             f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_pc_unseen.npy",
+        #                             self.checkpoint_path)
 
 
     def run_global_map_eval(self, init_from='mesh'):
@@ -223,6 +264,7 @@ class Evaluator(object):
 
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
+        # 여기서 SH도 같이 최적화 함
         refined_merged_gaussian_model = refine_global_map(merged_cloud, training_frames, 30000, export_refine_mesh=False,
                                                           output_dir=self.checkpoint_path, len_frames=len_frames, 
                                                           o3d_intrinsic=intrinsic)
@@ -267,7 +309,11 @@ class Evaluator(object):
             lpips_model = LearnedPerceptualImagePatchSimilarity(
                 net_type='alex', normalize=True).to(self.device)
             
-            submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+            # submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+            submaps_paths = sorted(
+            [path for path in (self.checkpoint_path / "submaps").glob('*.ckpt')
+             if int(path.stem) in self.all_loop_ids]
+        )
             for submap_path in tqdm(submaps_paths):
                 submap = torch.load(submap_path, map_location=self.device)
 

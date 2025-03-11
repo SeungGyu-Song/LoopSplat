@@ -18,7 +18,7 @@ from src.entities.mapper import Mapper
 from src.entities.tracker import Tracker
 from src.entities.lc import Loop_closure
 from src.entities.logger import Logger
-from src.utils.io_utils import save_dict_to_ckpt, save_dict_to_yaml
+from src.utils.io_utils import save_dict_to_ckpt, save_dict_to_yaml, save_dict_to_json
 from src.utils.mapper_utils import exceeds_motion_thresholds 
 from src.utils.utils import np2torch, setup_seed, torch2np
 from src.utils.vis_utils import *  # noqa - needed for debugging
@@ -38,7 +38,7 @@ class GaussianSLAM(object):
 
         n_frames = len(self.dataset)
         frame_ids = list(range(n_frames))
-        self.mapping_frame_ids = frame_ids[::config["mapping"]["map_every"]] + [n_frames - 1]
+        self.mapping_frame_ids = frame_ids[::config["mapping"]["map_every"]] + [n_frames - 1] # +로 마지막 프레임을 강제로 추가 (미리 모든 프레임을 알고있어야함.)
 
         self.estimated_c2ws = torch.empty(len(self.dataset), 4, 4)
         self.estimated_c2ws[0] = torch.from_numpy(self.dataset[0][3])
@@ -54,7 +54,7 @@ class GaussianSLAM(object):
         if self.submap_using_motion_heuristic:
             self.new_submap_frame_ids = [0]
         else:
-            self.new_submap_frame_ids = frame_ids[::config["mapping"]["new_submap_every"]] + [n_frames - 1]
+            self.new_submap_frame_ids = frame_ids[::config["mapping"]["new_submap_every"]] + [n_frames - 1] # +로 마지막 프레임을 강제로 추가
             self.new_submap_frame_ids.pop(0)
 
         self.logger = Logger(self.output_path, config["use_wandb"])
@@ -63,6 +63,8 @@ class GaussianSLAM(object):
         self.enable_exposure = self.tracker.enable_exposure
         self.loop_closer = Loop_closure(config, self.dataset, self.logger)
         self.loop_closer.submap_path = self.output_path / "submaps"
+
+        # self.loop_pairs_path = self.loop_closer.submap_path / "loop_pairs.json"
         
         print('Tracking config')
         pprint.PrettyPrinter().pprint(config["tracking"])
@@ -132,10 +134,10 @@ class GaussianSLAM(object):
             A new, reset GaussianModel instance for the new submap.
         """
         
-        gaussian_model = GaussianModel(0)
+        gaussian_model = GaussianModel(0) # Tracking 시에는 SH=0으로 시작
         gaussian_model.training_setup(self.opt)
         self.mapper.keyframes = []
-        self.keyframes_info = {}
+        self.keyframes_info = {} # frame_id, opt_dict를 저장.
         if self.submap_using_motion_heuristic:
             self.new_submap_frame_ids.append(frame_id)
         self.mapping_frame_ids.append(frame_id) if frame_id not in self.mapping_frame_ids else self.mapping_frame_ids
@@ -143,6 +145,8 @@ class GaussianSLAM(object):
         self.loop_closer.submap_id += 1
         return gaussian_model
     
+    # gaussian_model.py에서 저장한 ckpt를 불러와서 submap의 gaussian parameters를 업데이트
+    # x,y,z 축 스케일에 대해서는 변환을 안 해주나?
     def rigid_transform_gaussians(self, gaussian_params, tsfm_matrix):
         '''
         Apply a rigid transformation to the Gaussian parameters.
@@ -156,9 +160,9 @@ class GaussianSLAM(object):
         '''
         # Transform Gaussian centers (xyz)
         tsfm_matrix = torch.from_numpy(tsfm_matrix).float()
-        xyz = gaussian_params['xyz']
+        xyz = gaussian_params['xyz'] #얘가 size : (1,3)으로 저장되나보다
         pts_ones = torch.ones((xyz.shape[0], 1))
-        pts_homo = torch.cat([xyz, pts_ones], dim=1)
+        pts_homo = torch.cat([xyz, pts_ones], dim=1) # 1,4
         transformed_xyz = (tsfm_matrix @ pts_homo.T).T[:, :3]
         gaussian_params['xyz'] = transformed_xyz
 
@@ -192,13 +196,14 @@ class GaussianSLAM(object):
         submaps_kf_ids= {}
         for correction in correction_list:
             submap_id = correction['submap_id']
-            correct_tsfm = correction['correct_tsfm']
+            correct_tsfm = correction['correct_tsfm'] # corrected poses
 
             submap_ckpt_name = str(submap_id).zfill(6) + ".ckpt"
             submap_ckpt = torch.load(self.output_path / "submaps" / submap_ckpt_name)
             submaps_kf_ids[submap_id] = submap_ckpt["submap_keyframes"]
 
             gaussian_params = submap_ckpt["gaussian_params"]
+            # gaussian을 그냥 transformation하는 거.
             updated_gaussian_params = self.rigid_transform_gaussians(
                 gaussian_params, correct_tsfm)
 
@@ -216,7 +221,7 @@ class GaussianSLAM(object):
         for frame_id in range(len(self.dataset)):
 
             if frame_id in [0, 1]:
-                estimated_c2w = self.dataset[frame_id][-1]
+                estimated_c2w = self.dataset[frame_id][-1] # pose는 SLAM으로 구해야하는 거 아닌가?
                 exposure_ab = torch.nn.Parameter(torch.tensor(
                     0.0, device="cuda")), torch.nn.Parameter(torch.tensor(0.0, device="cuda"))
             else:
@@ -226,32 +231,35 @@ class GaussianSLAM(object):
             exposure_ab = exposure_ab if self.enable_exposure else None
             self.estimated_c2ws[frame_id] = np2torch(estimated_c2w)
 
+            # 아래 과정은 map frame이 아니어도 진행
             # Reinitialize gaussian model for new segment
             if self.should_start_new_submap(frame_id):
                 # first save current submap and its keyframe info
                 self.save_current_submap(gaussian_model)
                 
                 # update submap infomation for loop closer
+                # extract self similarity within submap? self.keyframes_info에 전체 정보가 다 들어있는 건가?
                 self.loop_closer.update_submaps_info(self.keyframes_info)
                 
                 # apply loop closure
                 lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
                 
                 if len(lc_output) > 0:
-                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
+                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output) 
                     self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
                 
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
                 
                 gaussian_model = self.start_new_submap(frame_id, gaussian_model)
 
-            if frame_id in self.mapping_frame_ids:
+            if frame_id in self.mapping_frame_ids: 
                 print("\nMapping frame", frame_id)
                 gaussian_model.training_setup(self.opt, exposure_ab) 
                 estimate_c2w = torch2np(self.estimated_c2ws[frame_id])
                 new_submap = not bool(self.keyframes_info)
+                # Paper 3.2 : Registration of Gaussian Splats
                 opt_dict = self.mapper.map(
-                    frame_id, estimate_c2w, gaussian_model, new_submap, exposure_ab)
+                    frame_id, estimate_c2w, gaussian_model, new_submap, exposure_ab) # 여기서 pointcloud 생성해서 뭔가 mesh를 하는 거 같은데
 
                 # Keyframes info update
                 self.keyframes_info[frame_id] = {
@@ -273,5 +281,13 @@ class GaussianSLAM(object):
                 self.exposures_ab[frame_id] = torch.tensor([exposure_ab[0].item(), exposure_ab[1].item()])
         
         save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
+
+        # self.loop_pairs_path.mkdir(exist_ok=True, parents=True)
+        save_dict_to_json(self.loop_closer.loop_pairs, file_name="loop_pairs.json", directory=self.loop_closer.submap_path )
+        # with open(self.loop_pairs_path, "w") as f:
+        #     json.dump(self.loop_closer.loop_pairs, f, indent=4)
+        #     print(f'Entire Loop Pairs(SLAM) : {self.loop_closer.loop_pairs}')
+
+
         if self.enable_exposure:
             save_dict_to_ckpt(self.exposures_ab, "exposures_ab.ckpt", directory=self.output_path)

@@ -81,6 +81,8 @@ class Loop_closure(object):
         
         self.max_correspondence_distance_coarse = self.config['lc']['voxel_size'] * 15
         self.max_correspondence_distance_fine = self.config['lc']['voxel_size'] * 1.5
+
+        self.loop_pairs = {}
         
     def update_submaps_info(self, keyframes_info):
         """Update the submaps_info with current submap 
@@ -88,13 +90,15 @@ class Loop_closure(object):
         Args:
             keyframes_info (dict): a dictionary of all submap information for loop closures
         """
+        # dataset : index, color_data, depth_data, c2w (pose)
+        # keyframes_info : keyframes, opt_dict
         with torch.no_grad():
             kf_ids, submap_desc = [], []
             for key in keyframes_info.keys():
-                submap_desc.append(self.netvlad(np2torch(self.dataset[key][1], self.device).permute(2, 0, 1)[None]/255.0))
-            submap_desc = torch.cat(submap_desc)
+                submap_desc.append(self.netvlad(np2torch(self.dataset[key][1], self.device).permute(2, 0, 1)[None]/255.0)) # [None] : C, H, W => 1, C, H, W == unsqueeze(0)
+            submap_desc = torch.cat(submap_desc) #concatenate
             self_sim = torch.einsum("id,jd->ij", submap_desc, submap_desc)
-            score_min, _ = self_sim.topk(max(int(len(submap_desc) * self.config["lc"]["min_similarity"]), 1))
+            score_min, _ = self_sim.topk(max(int(len(submap_desc) * self.config["lc"]["min_similarity"]), 1)) # 마지막 1은 최소한 1개 이상의 값을 가지고 있게끔 하는 거임. 
             
         self.submap_lc_info[self.submap_id] = {
                 "submap_id": self.submap_id,
@@ -198,7 +202,7 @@ class Loop_closure(object):
         for i in range(n_submaps):
             pose_graph.nodes.append(
                 o3d.pipelines.registration.PoseGraphNode(np.identity(4)))
-            submap_list.append(self.submap_loader(i))
+            submap_list.append(self.submap_loader(i)) #submap 정보 (Gaussians, kf_ids, cameras, kf_desc)를 return.
         
         # log info for edge analysis
         self.cam_dict = dict()
@@ -212,8 +216,9 @@ class Loop_closure(object):
         
         odometry_edges, loop_edges = [], []
         new_submap_valid_loop = False
+        loop_pairs = {}
         for source_id in tqdm(reversed(range(1, n_submaps))):
-            matches = self.detect_closure(source_id, final)
+            matches = self.detect_closure(source_id, final) # detect closure for each submap
             iterator = range(source_id+1, n_submaps) if final else range(source_id)
             for target_id in iterator:
                 if abs(target_id - source_id)== 1: # odometry edge
@@ -254,11 +259,14 @@ class Loop_closure(object):
                                                                 information,
                                                                 uncertain=True))
                     new_submap_valid_loop = True
+                    if source_id not in loop_pairs :
+                        loop_pairs[source_id] = []
+                    loop_pairs[source_id].append(target_id)
             
             if source_id == self.submap_id and not new_submap_valid_loop:
                 break    
                 
-        return pose_graph, odometry_edges, loop_edges
+        return pose_graph, odometry_edges, loop_edges, loop_pairs
     
     def loop_closure(self, estimated_c2ws, final=False):
         '''
@@ -279,7 +287,7 @@ class Loop_closure(object):
             print(f"\nNo loop closure detected at submap no.{self.submap_id}")
             return correction_list
         
-        pose_graph, odometry_edges, loop_edges = self.construct_pose_graph(final)
+        pose_graph, odometry_edges, loop_edges, self.loop_pairs = self.construct_pose_graph(final) ## detect_loop으로 submap간 loop 찾음. 
         
         # save pgo edge analysis result
         

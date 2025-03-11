@@ -5,6 +5,8 @@ import random
 import numpy as np
 import open3d as o3d
 import torch
+
+#https://github.com/VladimirYugay/gaussian_rasterizer 여기서 다운 받아서 가지고 있는 거 인듯
 from gaussian_rasterizer import GaussianRasterizationSettings, GaussianRasterizer
 
 

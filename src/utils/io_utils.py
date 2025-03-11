@@ -101,6 +101,46 @@ def load_config(path: str, default_path: str = None) -> dict:
     update_recursive(cfg, cfg_special)
     return cfg
 
+def load_json(path: str, is_LoopPairs: bool = True) -> dict :
+    loop_pairs = {}
+    with open(path, 'r') as f:
+        loop_pairs = json.load(f)
+        if(is_LoopPairs) :
+            print(f'Entire Loop Pairs(Evaluator) : {loop_pairs}')
+        print(f"Loop Pairs (Evaluator) {loop_pairs}")
+        loop_pairs = convert_to_int_recursive(loop_pairs)
+    return loop_pairs
+
+def convert_to_int_recursive(value) :
+    
+    if isinstance(value,dict) :
+        new_dict = {}
+        for k, v in value.items() :
+            try:
+                new_k = int(k)
+            except ValueError:
+                new_k = k
+                
+            if isinstance(v, dict) :
+                convert_to_int_recursive(v)
+            elif isinstance(v, list) :
+                new_dict[new_k] = [convert_to_int_recursive(x) for x in v]
+            else :
+                try :
+                    new_dict[new_k] = int(v)
+                except ValueError :
+                    new_dict[new_k] = v
+        return new_dict
+    
+    elif isinstance(value, list) :
+            return [convert_to_int_recursive(x) for x in value]
+    else : 
+            try :
+                return int(value)
+            except ValueError :
+                return ValueError
+        
+
 
 def update_recursive(dict1: dict, dict2: dict) -> None:
     """ Recursively updates the first dictionary with the contents of the second dictionary.
@@ -147,3 +187,5 @@ def log_metrics_to_wandb(json_files: list, output_path: str, section: str = "Eva
             prefixed_metrics = {
                 f"{section}/{key}": value for key, value in metrics.items()}
             wandb.log(prefixed_metrics)
+
+

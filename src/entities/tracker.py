@@ -70,8 +70,8 @@ class Tracker(object):
 
         pts = gaussian_model.get_xyz()
         pts_ones = torch.ones(pts.shape[0], 1).cuda().float()
-        pts4 = torch.cat((pts, pts_ones), dim=1)
-        transformed_pts = (rel_transform @ pts4.T).T[:, :3]
+        pts4 = torch.cat((pts, pts_ones), dim=1) # homogeneous coordinate을 해주는 건가?
+        transformed_pts = (rel_transform @ pts4.T).T[:, :3] # n,3인데 4번째가 1이되게 normalize 안 하나?
 
         quat = F.normalize(opt_cam_rot[None])
         _rotations = multiply_quaternions(gaussian_model.get_rotation(), quat.unsqueeze(0)).squeeze(0)
@@ -120,6 +120,7 @@ class Tracker(object):
         Returns:
             The updated camera-to-world transformation matrix for the current frame.
         """
+        # idx, image, depth, pose
         _, image, depth, gt_c2w = self.dataset[frame_id]
 
         if (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
@@ -143,12 +144,14 @@ class Tracker(object):
         reference_w2c = last_w2c
         render_settings = get_render_settings(
             self.dataset.width, self.dataset.height, self.dataset.intrinsics, reference_w2c)
+        # return relative camera pose
         opt_cam_rot, opt_cam_trans = compute_camera_opt_params(init_rel_w2c)
         if self.enable_exposure:
             exposure_ab = torch.nn.Parameter(torch.tensor(
                 0.0, device="cuda")), torch.nn.Parameter(torch.tensor(0.0, device="cuda"))
         else:
             exposure_ab = None
+        # cam_rot, cam_trans만 learning rate가 있고, 나머지 Gaussian들에 대해 0.0이면 학습이 안 되는 거 아님?
         gaussian_model.training_setup_camera(opt_cam_rot, opt_cam_trans, self.config, exposure_ab)
 
         gt_color = self.transform(image).cuda()

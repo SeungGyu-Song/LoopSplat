@@ -21,7 +21,7 @@ from src.utils.gaussian_model_utils import (RGB2SH, build_scaling_rotation,
                                             get_expon_lr_func, inverse_sigmoid,
                                             strip_symmetric, BasicPointCloud)
 
-
+# submap에 해당하는 Gaussian들
 class GaussianModel:
     def __init__(self, sh_degree: int = 3, isotropic=False):
         self.gaussian_param_names = [
@@ -91,7 +91,7 @@ class GaussianModel:
             "xyz_gradient_accum": self.xyz_gradient_accum.clone().detach().cpu(),
             "denom": self.denom.clone().detach().cpu(),
             "spatial_lr_scale": self.spatial_lr_scale,
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": self.optimizer.state_dict(), # optimizer는 왜?
         }
 
     def get_size(self):
@@ -209,7 +209,7 @@ class GaussianModel:
             {"params": [self._features_rest], "lr": 0.0, "name": "f_rest"},
             {"params": [self._opacity], "lr": 0.0, "name": "opacity"},
             {"params": [self._scaling], "lr": 0.0, "name": "scaling"},
-            {"params": [self._rotation], "lr": 0.0, "name": "rotation"},
+            {"params": [self._rotation], "lr": 0.0, "name": "rotation"}, # 왜 learning rate가 0.0?
             {"params": [cam_rot], "lr": cfg["cam_rot_lr"],
                 "name": "cam_unnorm_rot"},
             {"params": [cam_trans], "lr": cfg["cam_trans_lr"],
